@@ -46,3 +46,4 @@ if __name__ == "__main__":
     print("\nSample chunk:")
     print(chunks[1].page_content)
     print(chunks[1].metadata)
+    print(f"Total chunks: {len(chunks)}")
