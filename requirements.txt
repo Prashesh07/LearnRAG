@@ -1,0 +1,12 @@
+# Core LangChain packages
+langchain-core
+langchain-community
+langchain-text-splitters
+langchain-experimental
+
+# PDF loading (used by PyPDFLoader)
+pypdf
+
+# Local, free embeddings (no API key needed)
+langchain-huggingface
+sentence-transformers
