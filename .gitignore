@@ -13,4 +13,11 @@ wheels/
 #chriomadb
 chroma_db/
 
+# Exclude raw PDF documents
+docs/research_papers/
+*.pdf
+
+# Exclude vector store persistent data
+chroma_data/
+
 
