@@ -7,7 +7,7 @@ from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 
 from embedder import get_embedding_model
-#from chunker import recursicve_split
+from chunker import recursive_split
 from semantic_chunker import semantic_split
 
 
@@ -28,8 +28,8 @@ def build_vector_store(
         A Chroma vector store instance, ready for querying.
     """
     embeddings = get_embedding_model()
-    chunks = semantic_split(chunks)  # Use semantic splitting for better context preservation
-
+    #chunks = semantic_split(chunks)  # Use semantic splitting for better context preservation
+    chunks=recursive_split(chunks)  # Use recursive splitting for better context preservation
     vector_store = Chroma.from_documents(
         documents=chunks,
         embedding=embeddings,
