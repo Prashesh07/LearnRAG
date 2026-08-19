@@ -1,7 +1,11 @@
+import pickle
 from pathlib import Path
-from langchain_community.document_loaders import PyPDFLoader,PyMuPDFLoader
-
+from langchain_community.document_loaders import PyMuPDFLoader
 from langchain_core.documents import Document
+
+# Where cached, already-loaded documents are stored so repeated runs
+# don't need to re-parse every PDF from scratch.
+CACHE_PATH = Path("./cache/documents.pkl")
 
 
 def pdf_loader(pdf_path: str) -> list[Document]:
@@ -77,6 +81,44 @@ def load_pdf_folder(folder_path: str, limit: int | None = None) -> list[Document
     return all_documents
 
 
+def get_documents(
+    folder_path: str = "./docs/research_papers",
+    limit: int | None = None,
+    force_reload: bool = False,
+    cache_path: Path = CACHE_PATH,
+) -> list[Document]:
+    """
+    Load documents from a folder, using a cached copy if one already exists.
+
+    This avoids re-parsing every PDF (slow, especially at 200+ papers) each
+    time you run or test downstream code like chunking/embedding. The cache
+    is invalidated manually via force_reload=True, or automatically ignored
+    if it doesn't exist yet.
+
+    Args:
+        folder_path: Path to the folder containing PDFs.
+        limit: Optional cap on number of PDFs to load (only applies on a fresh load).
+        force_reload: If True, ignores any existing cache and re-parses all PDFs.
+        cache_path: Where to store/read the cached documents.
+
+    Returns:
+        List of Document objects, either loaded fresh or from cache.
+    """
+    if cache_path.exists() and not force_reload:
+        print(f"Loading cached documents from: {cache_path}")
+        documents = pickle.loads(cache_path.read_bytes())
+        print(f"Loaded {len(documents)} cached page(s)")
+        return documents
+
+    documents = load_pdf_folder(folder_path, limit=limit)
+
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    cache_path.write_bytes(pickle.dumps(documents))
+    print(f"Cached {len(documents)} document(s) to: {cache_path}")
+
+    return documents
+
+
 if __name__ == "__main__":
-    docs = load_pdf_folder("./docs/research_papers")
-    
+    docs = get_documents("./docs/research_papers")
+    print(f"\nTotal documents ready: {len(docs)}")

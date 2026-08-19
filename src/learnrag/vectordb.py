@@ -1,5 +1,5 @@
 """
-Vector store setup: takes chunks from chunker.py and embeddings from embedder.py,
+Vector store setup: takes already-chunked Documents and an embedding model,
 stores them in a persistent ChromaDB collection, and provides similarity search.
 """
 
@@ -7,35 +7,41 @@ from langchain_community.vectorstores import Chroma
 from langchain_core.documents import Document
 
 from embedder import get_embedding_model
-from chunker import recursive_split
-from semantic_chunker import semantic_split
 
 
 def build_vector_store(
     chunks: list[Document],
     persist_directory: str = "./chroma_db",
     collection_name: str = "learnrag_collection",
+    batch_size: int = 500,
 ) -> Chroma:
     """
-    Embed chunks (using embedder.get_embedding_model) and store them in Chroma.
+    Embed already-chunked Documents and store them in Chroma, in batches.
 
     Args:
-        chunks: List of Document chunks from chunker.semantic_split.
+        chunks: List of Document chunks (already split — this function does NOT re-chunk).
         persist_directory: Folder where Chroma saves its data to disk.
         collection_name: Name of the collection inside Chroma.
+        batch_size: Number of chunks to embed and write per batch.
 
     Returns:
         A Chroma vector store instance, ready for querying.
     """
+    if batch_size <= 0:
+        raise ValueError("batch_size must be greater than zero")
+
     embeddings = get_embedding_model()
-    #chunks = semantic_split(chunks)  # Use semantic splitting for better context preservation
-    chunks=recursive_split(chunks)  # Use recursive splitting for better context preservation
-    vector_store = Chroma.from_documents(
-        documents=chunks,
-        embedding=embeddings,
+
+    vector_store = Chroma(
+        embedding_function=embeddings,
         collection_name=collection_name,
         persist_directory=persist_directory,
     )
+
+    for start in range(0, len(chunks), batch_size):
+        batch = chunks[start:start + batch_size]
+        vector_store.add_documents(batch)
+        print(f"Stored {min(start + batch_size, len(chunks))}/{len(chunks)} chunks")
 
     print(f"Stored {len(chunks)} chunks in Chroma at '{persist_directory}' "
           f"(collection: '{collection_name}')")
@@ -75,15 +81,16 @@ def similarity_search(vector_store: Chroma, query: str, k: int = 5) -> list[Docu
 
 
 if __name__ == "__main__":
-    from document_loader import pdf_loader
+    from document_loader import get_documents
+    from chunker import split_chunks
 
-    # 1. Load and chunk the PDF (chunker.py handles splitting)
-    docs = pdf_loader("./docs/langchain_summary.pdf")
-    chunks = semantic_split(docs)
+    # 1. Load documents and chunk them ONCE, here — vectordb.py doesn't re-chunk
+    docs = get_documents("./docs/research_papers")
+    chunks = split_chunks(docs)
     print(f"Total chunks: {len(chunks)}")
 
-    # 2. Build the vector store (embedder.py handles the embedding model)
+    # 2. Build the vector store (embeds and stores, does not re-split)
     vector_store = build_vector_store(chunks)
 
     # 3. Try a sample query
-    similarity_search(vector_store, query="What is LangChain used for?", k=3)
+    similarity_search(vector_store, query="What are the most common LLM evaluation metrics?", k=3)
