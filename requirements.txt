@@ -1,12 +1,19 @@
-# Core LangChain packages
-langchain-core
-langchain-community
-langchain-text-splitters
-langchain-experimental
 
-# PDF loading (used by PyPDFLoader)
-pypdf
+chromadb==1.5.9
+groq==0.37.1
+huggingface_hub==1.27.0
+langchain-classic==1.0.8
+langchain-community==0.4.2
+langchain-core==1.5.4
+langchain-experimental==0.4.2
+langchain-groq==1.1.3
+langchain-huggingface==1.2.2
+langchain-protocol==0.0.18
+langchain-text-splitters==1.1.2
+langsmith==0.10.18
+pymupdf==1.28.2
+sentence-transformers==5.7.0
+tiktoken==0.14.0
+tokenizers==0.22.2
+transformers==5.15.0
 
-# Local, free embeddings (no API key needed)
-langchain-huggingface
-sentence-transformers
