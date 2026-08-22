@@ -1,36 +1,44 @@
-# LearnRAG
+# LearnRAG — Research Assistant
 
-A learning project that implements a Retrieval-Augmented Generation (RAG) pipeline from scratch — from loading a PDF to generating grounded, context-aware answers using an LLM.
+A Retrieval-Augmented Generation (RAG) research assistant that ingests a corpus of academic papers (arXiv, ~200 papers on LLM evaluation) and answers questions grounded in that corpus, using hybrid (dense + sparse) retrieval and cross-encoder reranking for high-precision results.
+
+This project evolved from a single-PDF RAG prototype into a multi-document research assistant, built branch-by-branch on top of the original `LearnRAG` pipeline.
 
 ## What This Project Does
 
-LearnRAG takes a PDF document, breaks it into searchable chunks, embeds those chunks into a vector database, and uses that database to retrieve relevant context for answering user questions with an LLM. This is the standard RAG pattern used in most modern AI-powered Q&A and chatbot systems.
+1. Downloads a focused corpus of ~200 research papers from arXiv on a chosen topic (LLM evaluation).
+2. Loads and parses all PDFs, with caching so this expensive step only runs once.
+3. Splits papers into clean, filtered chunks (dropping junk/reference-list fragments).
+4. Embeds chunks locally (free, no API cost) and stores them in a persistent Chroma vector database.
+5. Retrieves relevant chunks using **hybrid search** — dense (semantic) + sparse (keyword/BM25) — fused via Reciprocal Rank Fusion.
+6. Reranks the retrieved candidates with a cross-encoder model for final precision.
+7. Generates a grounded answer using a Groq-hosted LLM, using only the reranked context.
 
 ## Pipeline Overview
 
 ```
-PDF File
-   │
-   ▼
-document_loader.py   →  Loads PDF and extracts text (PyPDFLoader)
-   │
-   ▼
-chunker.py            →  Splits text into chunks
-                          (Recursive Character Splitter / Semantic Chunker)
-   │
-   ▼
-embedder.py            →  Converts chunks into vector embeddings
-                          (HuggingFace sentence-transformers, local & free)
-   │
-   ▼
-vectordb.py             →  Stores embeddings in ChromaDB for retrieval
-   │
-   ▼
-generator.py            →  Retrieves relevant chunks + generates an answer
-                          (LangChain + Groq LLM — llama-3.3-70b-versatile)
-   │
-   ▼
-Final Answer
+arXiv Papers (download_papers.py)
+        │
+        ▼
+document_loader.py   → Loads all PDFs (PyMuPDF), caches to disk
+        │
+        ▼
+chunker.py            → Splits into token-sized chunks, filters junk/references
+        │
+        ▼
+embedder.py            → Local HuggingFace embedding model (free, no API key)
+        │
+        ▼
+vectordb.py             → Batched embedding into a persistent Chroma vector store
+        │
+        ▼
+retriever.py             → Hybrid retrieval: dense (Chroma) + sparse (BM25) via RRF
+        │
+        ▼
+reranker.py               → Cross-encoder reranks candidates for precision
+        │
+        ▼
+generator.py               → Retrieved + reranked context → Groq LLM → grounded answer
 ```
 
 ## Project Structure
@@ -39,44 +47,68 @@ Final Answer
 LearnRAG/
 ├── src/
 │   └── learnrag/
-│       ├── document_loader.py   # Loads PDFs into LangChain Documents
-│       ├── chunker.py           # Splits documents into chunks
-│       ├── embedder.py          # Loads the HuggingFace embedding model
-│       ├── vectordb.py          # Builds/loads Chroma vector store, similarity search
-│       └── generator.py         # RAG chain: retrieval + LLM generation
+│       ├── download_papers.py   # Downloads ~200 arXiv papers on a chosen topic
+│       ├── document_loader.py   # Loads PDFs (PyMuPDF), with disk caching
+│       ├── chunker.py           # Recursive token-based chunking + junk filtering
+│       ├── embedder.py          # Local HuggingFace embedding model
+│       ├── vectordb.py          # Batched Chroma vector store build/load/search
+│       ├── retriever.py         # Hybrid retrieval (dense + sparse + RRF fusion)
+│       ├── reranker.py          # Cross-encoder reranking of retrieved candidates
+│       └── generator.py         # Full RAG chain: retrieve → rerank → generate
 ├── docs/
-│   └── langchain_summary.pdf    # Sample source document
+│   └── research_papers/         # Downloaded arXiv PDFs (~200 papers)
+├── cache/
+│   └── documents.pkl            # Cached parsed documents (avoids PDF re-parsing)
 ├── chroma_db/                   # Persisted vector database (generated)
 ├── requirements.txt
+├── .env                         # API keys (not committed)
 ├── .gitignore
 └── README.md
 ```
 
 ## Module Reference
 
+### `download_papers.py`
+Uses the `arxiv` package to search and download a focused set of papers (e.g., ~200 papers matching "LLM evaluation" within `cs.CL`). Downloads each PDF via `requests` using each result's `pdf_url` (the package's older `download_pdf()` convenience method was removed in recent versions). Skips already-downloaded files so re-runs are safe.
+
 ### `document_loader.py`
-Loads a PDF file using `PyPDFLoader` and returns a list of LangChain `Document` objects (one per page), each with `page_content` and `metadata`.
+- `pdf_loader()` — loads a single PDF using `PyMuPDFLoader` (faster and more robust than `pypdf` for multi-column academic PDFs).
+- `load_pdf_folder()` — loads every PDF in a folder, skipping and logging any that fail to parse (corrupt/scanned files).
+- `get_documents()` — wraps folder loading with a pickle-based cache (`cache/documents.pkl`), so repeated runs/tests don't re-parse ~200 PDFs every time. Use `force_reload=True` after adding/removing papers.
 
 ### `chunker.py`
-Splits loaded documents into smaller chunks for embedding, using either:
-- **Recursive Character Splitter** — fast, splits on paragraph/sentence boundaries, no API calls.
-- **Semantic Chunker** — splits based on meaning shifts between sentences using embeddings, producing more topically coherent chunks (slower).
+Splits documents using `RecursiveCharacterTextSplitter`, measured by **token count** (via `tiktoken`) rather than raw characters, for more predictable prompt sizing. Filters out:
+- Near-empty chunks (stray headers, page numbers)
+- Likely bibliography/reference-list fragments, detected heuristically (dense bracketed citation numbers, or repeated "Name Name," author-list patterns)
+
+Semantic chunking (embedding-based) was evaluated but dropped in favor of recursive splitting at this corpus scale — it makes an embedding call per sentence boundary, which is too slow across ~200 papers.
 
 ### `embedder.py`
-Loads a local HuggingFace embedding model (`sentence-transformers/all-MiniLM-L6-v2`) that converts text into dense vector representations. Runs entirely on-device — no API key or cost required.
+Loads a local HuggingFace embedding model (`sentence-transformers/all-MiniLM-L6-v2`). Runs entirely on-device — no API key or cost, though setting `HF_TOKEN` avoids rate-limit warnings on model download.
 
 ### `vectordb.py`
-Manages the ChromaDB vector store:
-- `build_vector_store()` — embeds chunks and persists them to disk.
-- `load_vector_store()` — reloads an existing store without re-embedding.
-- `similarity_search()` — retrieves the top-k most relevant chunks for a query.
+- `build_vector_store()` — embeds chunks and writes them to a persistent Chroma collection **in batches** (important at ~5,500+ chunks, to avoid one huge blocking call).
+- `load_vector_store()` — reloads the existing store without re-embedding.
+- `similarity_search()` — plain dense similarity search (used for baseline comparison against hybrid search).
+
+### `retriever.py`
+Implements **hybrid search**:
+- `build_bm25_retriever()` — sparse keyword retriever (BM25), built directly from chunk text, no embedding model needed.
+- `build_hybrid_retriever()` — combines the dense Chroma retriever and the BM25 retriever using `EnsembleRetriever`, which performs **weighted Reciprocal Rank Fusion (RRF)**: `score = weight / (rank + c)`, summed across retrievers and deduplicated by chunk content.
+- `hybrid_search()` — runs a query through the combined retriever and returns a ranked candidate set (recall-oriented: retrieves more candidates than are ultimately needed, e.g. top 10 from each retriever).
+
+### `reranker.py`
+Implements the **precision** stage on top of retrieval:
+- Uses a cross-encoder model (`cross-encoder/ms-marco-MiniLM-L-6-v2`) that scores each `(query, chunk)` pair **jointly**, which is more accurate than comparing independently-computed embedding vectors or BM25 scores.
+- Too slow to run over the whole corpus, so it only reranks the candidate set produced by `retriever.py` (e.g., narrows ~15–20 candidates down to the top 3–5).
 
 ### `generator.py`
-Wires retrieval and generation together into a full RAG chain using LangChain Expression Language (LCEL):
+Wires the full pipeline together using LangChain Expression Language (LCEL):
 1. Takes a user question.
-2. Retrieves relevant chunks from the vector store.
-3. Injects them as context into a prompt template.
-4. Sends the prompt to a Groq-hosted LLM (`llama-3.3-70b-versatile`) to generate a grounded answer.
+2. Runs it through `hybrid_search()` (retrieval) then `rerank()` (precision).
+3. Joins the final top chunks into a context string.
+4. Formats context + question into a prompt instructing the model to answer **only** from the given context, and to explicitly say "I don't know" if the context is insufficient.
+5. Sends the prompt to a Groq-hosted LLM (`openai/gpt-oss-120b`) and parses the text response.
 
 ## Setup
 
@@ -92,41 +124,44 @@ GROQ_API_KEY=your_groq_api_key_here
 HF_TOKEN=your_huggingface_token_here
 ```
 
-### 3. Run the pipeline
+### 3. Download the research paper corpus
+```bash
+python src/learnrag/download_papers.py
+```
+
+### 4. Run the full pipeline
 ```bash
 python src/learnrag/generator.py
 ```
 
-## Example
+## Why Hybrid Search + Reranking (Not Just Dense Retrieval)
 
-**Query:**
-> Describe the use of LangChain in building a RAG application.
+Dense embeddings are excellent at matching *meaning*, but research queries often hinge on exact terms — benchmark names (MMLU, HELM), author names, specific metrics — that dense similarity alone can under-match. Sparse (BM25) search catches these exact-term matches; combining both via RRF improves recall over either alone. The cross-encoder reranker then adds a precision pass: it directly judges relevance of each candidate to the query, catching false positives (e.g., keyword-overlapping but topically irrelevant chunks) that rank fusion alone can let through.
 
-**Pipeline behavior:**
-1. Retrieves the top 3 most relevant chunks from the embedded PDF.
-2. Passes them as context to the LLM.
-3. Returns a natural-language answer grounded in the source document (or "I don't know" if the answer isn't in the context).
+## Known Limitations / Notes
+
+- Table and figure-caption content sometimes extracts as jumbled text fragments (PDF parsers don't understand table structure) — occasionally surfaces as a noisy retrieval result.
+- A small number of downloaded papers (~3 out of 200) may fail to load (corrupted download or scanned/image-only PDF); these are logged and skipped rather than crashing the pipeline.
+- Groq periodically deprecates model IDs (e.g., `llama-3.3-70b-versatile` → `openai/gpt-oss-120b`); check `https://console.groq.com/docs/models` if you hit a `model_not_found` error.
+
+## Possible Next Steps
+
+- **Deploy with Docker** — containerize the app; Chroma with a mounted volume is sufficient for a single-host deployment, Pinecone becomes worth considering only for serverless/multi-replica deployments.
+- **Evaluation harness** — build a test set of question/answer pairs to measure retrieval precision/recall and answer faithfulness.
+- **Source-aware citations** — surface which paper(s) each answer draws from directly in the chat response (metadata is already tracked per chunk).
+- **UI layer** — wrap the pipeline in a simple Streamlit or Gradio front end.
 
 ## Tech Stack
 
 | Component | Tool |
 |---|---|
-| PDF Loading | `PyPDFLoader` (langchain-community) |
-| Text Splitting | `RecursiveCharacterTextSplitter`, `SemanticChunker` |
+| Paper acquisition | `arxiv` package (arXiv API) |
+| PDF Loading | `PyMuPDFLoader` (langchain-community) |
+| Text Splitting | `RecursiveCharacterTextSplitter` (token-based, via `tiktoken`) |
 | Embeddings | HuggingFace `sentence-transformers/all-MiniLM-L6-v2` (local, free) |
-| Vector Database | ChromaDB |
-| LLM | Groq (`llama-3.3-70b-versatile`) |
+| Vector Database | ChromaDB (batched writes) |
+| Sparse Retrieval | BM25 (`rank_bm25` via `BM25Retriever`) |
+| Hybrid Fusion | `EnsembleRetriever` (Reciprocal Rank Fusion) |
+| Reranking | `cross-encoder/ms-marco-MiniLM-L-6-v2` (local, free) |
+| LLM Inference | Groq (`openai/gpt-oss-120b`) |
 | Orchestration | LangChain Expression Language (LCEL) |
-
-## Possible Next Steps
-
-- **Hybrid search** — combine dense (Chroma) retrieval with sparse keyword search (BM25) via `EnsembleRetriever` for better exact-match recall.
-- **Evaluation** — measure retrieval quality and answer faithfulness against a test question set.
-- **UI** — wrap the pipeline in a simple Streamlit or Gradio front end.
-- **Multi-document support** — extend the loader to handle folders of PDFs, not just a single file.
-
-## Notes
-
-- Embeddings run locally and are free; no OpenAI API key is required for this project.
-- Groq is used for LLM inference due to its free tier and fast response times.
-- The Chroma database persists to disk (`./chroma_db`), so embeddings only need to be generated once per document.
