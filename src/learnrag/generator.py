@@ -14,8 +14,7 @@ from retriever import build_hybrid_retriever, hybrid_search
 from reranker import rerank
 
 
-# --- Build the pipeline once, at module load time ---
-# (loading/chunking/embedding is expensive; the chain itself is cheap to invoke repeatedly)
+
 
 docs = get_documents("./docs/research_papers")
 chunks = split_chunks(docs)
