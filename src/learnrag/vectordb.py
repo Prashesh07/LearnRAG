@@ -15,18 +15,7 @@ def build_vector_store(
     collection_name: str = "learnrag_collection",
     batch_size: int = 500,
 ) -> Chroma:
-    """
-    Embed already-chunked Documents and store them in Chroma, in batches.
-
-    Args:
-        chunks: List of Document chunks (already split — this function does NOT re-chunk).
-        persist_directory: Folder where Chroma saves its data to disk.
-        collection_name: Name of the collection inside Chroma.
-        batch_size: Number of chunks to embed and write per batch.
-
-    Returns:
-        A Chroma vector store instance, ready for querying.
-    """
+    
     if batch_size <= 0:
         raise ValueError("batch_size must be greater than zero")
 
@@ -84,13 +73,13 @@ if __name__ == "__main__":
     from document_loader import get_documents
     from chunker import split_chunks
 
-    # 1. Load documents and chunk them ONCE, here — vectordb.py doesn't re-chunk
+   
     docs = get_documents("./docs/research_papers")
     chunks = split_chunks(docs)
     print(f"Total chunks: {len(chunks)}")
 
-    # 2. Build the vector store (embeds and stores, does not re-split)
+   
     vector_store = build_vector_store(chunks)
 
-    # 3. Try a sample query
+    # sample query
     similarity_search(vector_store, query="What are the most common LLM evaluation metrics?", k=3)

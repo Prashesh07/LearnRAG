@@ -1,12 +1,6 @@
 """
 Retrieval: combines dense (Chroma) similarity search with sparse (BM25)
 keyword search using Reciprocal Rank Fusion (RRF) via EnsembleRetriever.
-
-This module handles RETRIEVAL ONLY — it returns a candidate set of chunks,
-ranked by RRF fusion of dense + sparse rankings. This is NOT reranking:
-RRF only combines rank positions from two retrievers, it does not have a
-model judge query-and-chunk relevance jointly the way a cross-encoder does.
-True reranking (cross-encoder scoring) happens separately in reranker.py.
 """
 
 from pathlib import Path
@@ -40,24 +34,7 @@ def build_hybrid_retriever(
     sparse_k: int = 10,
     weights: tuple[float, float] = (0.5, 0.5),
 ) -> EnsembleRetriever:
-    """
-    Combine dense (Chroma) and sparse (BM25) retrieval into one hybrid retriever
-    using Reciprocal Rank Fusion (RRF) to merge rankings from both.
-
-    Note: dense_k/sparse_k are set higher than your final desired result count
-    on purpose — this stage's job is to produce a good CANDIDATE set (recall).
-    Narrowing that down to the best few happens in reranker.py (precision).
-
-    Args:
-        chunks: The full chunk list (used to build the BM25 index).
-        vector_store: An already-built/loaded Chroma vector store.
-        dense_k: Number of candidates to pull from dense search.
-        sparse_k: Number of candidates to pull from sparse (BM25) search.
-        weights: Relative importance of (dense, sparse) when fusing rankings.
-
-    Returns:
-        An EnsembleRetriever combining both retrieval strategies.
-    """
+    
     dense_retriever = vector_store.as_retriever(search_kwargs={"k": dense_k})
     sparse_retriever = build_bm25_retriever(chunks, k=sparse_k)
 

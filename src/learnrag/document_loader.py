@@ -9,22 +9,10 @@ CACHE_PATH = Path("./cache/documents.pkl")
 
 
 def pdf_loader(pdf_path: str) -> list[Document]:
-    """
-    Load a single PDF file and return its contents as a list of LangChain Document objects.
+    
+    #Load a single PDF file and return its contents as a list of LangChain Document objects.
 
-    Each Document typically represents one page of the PDF, with:
-      - doc.page_content -> the extracted text
-      - doc.metadata     -> info like source path and page number
-
-    Args:
-        pdf_path: Path to a single PDF file.
-
-    Returns:
-        A list of Document objects, one per page.
-
-    Raises:
-        FileNotFoundError: If the PDF file doesn't exist.
-    """
+  
     path = Path(pdf_path)
     if not path.exists():
         raise FileNotFoundError(f"PDF file not found: {path}")
@@ -37,20 +25,10 @@ def pdf_loader(pdf_path: str) -> list[Document]:
 
 
 def load_pdf_folder(folder_path: str, limit: int | None = None) -> list[Document]:
-    """
-    Load every PDF in a folder (recursively) into a single list of Documents.
+    
+    #Load every PDF in a folder (recursively) into a single list of Documents.
 
-    Skips files that fail to load (corrupt, scanned/image-only, malformed)
-    instead of crashing the whole batch, and reports which ones failed.
-
-    Args:
-        folder_path: Path to the folder containing PDFs.
-        limit: Optional cap on number of PDFs to load (useful for testing
-               on a subset before running the full dataset).
-
-    Returns:
-        Combined list of Document objects across all successfully loaded PDFs.
-    """
+    
     folder = Path(folder_path)
     if not folder.exists():
         raise FileNotFoundError(f"Folder not found: {folder}")
@@ -87,23 +65,11 @@ def get_documents(
     force_reload: bool = False,
     cache_path: Path = CACHE_PATH,
 ) -> list[Document]:
-    """
-    Load documents from a folder, using a cached copy if one already exists.
+    
+    #Load documents from a folder, using a cached copy if one already exists.
 
-    This avoids re-parsing every PDF (slow, especially at 200+ papers) each
-    time you run or test downstream code like chunking/embedding. The cache
-    is invalidated manually via force_reload=True, or automatically ignored
-    if it doesn't exist yet.
 
-    Args:
-        folder_path: Path to the folder containing PDFs.
-        limit: Optional cap on number of PDFs to load (only applies on a fresh load).
-        force_reload: If True, ignores any existing cache and re-parses all PDFs.
-        cache_path: Where to store/read the cached documents.
-
-    Returns:
-        List of Document objects, either loaded fresh or from cache.
-    """
+    
     if cache_path.exists() and not force_reload:
         print(f"Loading cached documents from: {cache_path}")
         documents = pickle.loads(cache_path.read_bytes())

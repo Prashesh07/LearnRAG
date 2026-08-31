@@ -3,15 +3,7 @@ Reranking: takes a candidate set of chunks (from retriever.py's hybrid_search)
 and re-scores them with a cross-encoder model for higher precision than RRF
 fusion of dense/sparse rankings alone can achieve.
 
-Why this is a separate stage from retrieval:
-- Retrieval (retriever.py) is optimized for RECALL — quickly narrowing a huge
-  corpus (thousands of chunks) down to a reasonable candidate set, using rank
-  fusion (RRF) of dense + sparse rankings.
-- A cross-encoder reranker is far more accurate at judging TRUE relevance,
-  because it looks at the query and each candidate chunk TOGETHER as one
-  input (not as separately-computed vectors/scores) — but it's too slow to
-  run over an entire corpus, only over a small candidate set.
-- So the pattern is: retrieve broad (e.g. top 10-20 via RRF), then rerank
+the pattern is: retrieve broad (e.g. top 10-20 via RRF), then rerank
   narrow (down to the top 3-5 via cross-encoder) before sending to the LLM.
 """
 
@@ -19,17 +11,14 @@ from pathlib import Path
 from langchain_core.documents import Document
 from sentence_transformers import CrossEncoder
 
-# Local, free cross-encoder reranker model — no API key/cost.
+
 RERANKER_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 _reranker_model: CrossEncoder | None = None
 
 
 def get_reranker() -> CrossEncoder:
-    """
-    Load the cross-encoder reranker model, caching it after first load
-    so repeated calls in the same run don't reload the model from disk.
-    """
+    
     global _reranker_model
     if _reranker_model is None:
         _reranker_model = CrossEncoder(RERANKER_MODEL_NAME)
@@ -38,18 +27,7 @@ def get_reranker() -> CrossEncoder:
 
 
 def rerank(query: str, candidates: list[Document], top_k: int = 5) -> list[Document]:
-    """
-    Re-score and re-order candidate chunks by true relevance to the query,
-    then return only the top_k best.
-
-    Args:
-        query: The user's question.
-        candidates: Chunks retrieved by retriever.py's hybrid_search().
-        top_k: Number of top-ranked chunks to keep after reranking.
-
-    Returns:
-        The top_k most relevant Document chunks, ordered best-first.
-    """
+    
     if not candidates:
         return []
 

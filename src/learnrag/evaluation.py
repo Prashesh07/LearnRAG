@@ -9,7 +9,7 @@ Measures two things:
      final generated answer is actually grounded in the retrieved context
      (catches hallucination, like we saw with the off-topic LangChain query).
 
-Run this after your vector store / hybrid retriever / reranker are built.
+
 """
 
 import os
@@ -37,9 +37,9 @@ def extract_source_id(doc: Document) -> str:
     return Path(source_path).stem
 
 
-# ---------------------------------------------------------------------------
+
 # Retrieval metrics
-# ---------------------------------------------------------------------------
+
 
 def hit_rate_at_k(results: list[Document], expected_sources: list[str], k: int) -> bool:
     """True if any of the top-k results comes from an expected source paper."""
@@ -83,9 +83,8 @@ def evaluate_retriever(name: str, retrieve_fn, k: int = 5) -> dict:
     return {"name": name, "hit_rate": hit_rate, "mrr": mrr}
 
 
-# ---------------------------------------------------------------------------
 # Generation faithfulness (LLM-as-judge)
-# ---------------------------------------------------------------------------
+
 
 FAITHFULNESS_JUDGE_TEMPLATE = """\
 You are evaluating whether an AI-generated answer is faithful to the context it was given.
@@ -135,9 +134,9 @@ def evaluate_generation_faithfulness(rag_chain, retrieve_context_fn, judge_model
     return avg_score
 
 
-# ---------------------------------------------------------------------------
+
 # Main
-# ---------------------------------------------------------------------------
+
 
 if __name__ == "__main__":
     docs = get_documents("./docs/research_papers")
@@ -180,7 +179,7 @@ if __name__ == "__main__":
     for r in [results_dense, results_hybrid, results_reranked]:
         print(f"{r['name']:<30} Hit Rate@{K}: {r['hit_rate']:.2%}   MRR: {r['mrr']:.3f}")
 
-    # --- Generation faithfulness (optional, uses Groq — costs a few extra calls) ---
+    # Generation faithfulness 
     print("\n" + "=" * 60)
     print("GENERATION FAITHFULNESS (LLM-as-judge)")
     print("=" * 60)

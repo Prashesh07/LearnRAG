@@ -1,7 +1,3 @@
-"""
-Recursive text splitter — splits documents into chunks for embedding,
-sized/measured by token count for more predictable prompt sizing downstream.
-"""
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
@@ -38,10 +34,7 @@ def is_likely_reference_chunk(text: str) -> bool:
     return style1 >= 3 or style2 >= 3 or bracket_refs >= 2
 
 def split_chunks(documents: list[Document], chunk_size: int = 1200, chunk_overlap: int = 200) -> list[Document]:
-    """
-    Split documents into smaller chunks using recursive character splitting,
-    measured by token count. Filters out near-empty/junk chunks.
-    """
+    
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
