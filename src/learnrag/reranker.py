@@ -26,7 +26,7 @@ def get_reranker() -> CrossEncoder:
     return _reranker_model
 
 
-def rerank(query: str, candidates: list[Document], top_k: int = 5) -> list[Document]:
+def rerank(query: str, candidates: list[Document], top_k: int = 5, verbose: bool = True) -> list[Document]:
     
     if not candidates:
         return []
@@ -42,10 +42,11 @@ def rerank(query: str, candidates: list[Document], top_k: int = 5) -> list[Docum
 
     top_results = [doc for doc, score in scored_candidates[:top_k]]
 
-    print(f"\nReranked {len(candidates)} candidates -> top {len(top_results)} for query: '{query}'")
-    for i, (doc, score) in enumerate(scored_candidates[:top_k], start=1):
-        preview = doc.page_content[:120].replace("\n", " ")
-        print(f"{i}. (score={score:.4f}) {preview}...")
+    if verbose:
+        print(f"\nReranked {len(candidates)} candidates -> top {len(top_results)} for query: '{query}'")
+        for i, (doc, score) in enumerate(scored_candidates[:top_k], start=1):
+            preview = doc.page_content[:120].replace("\n", " ")
+            print(f"{i}. (score={score:.4f}) {preview}...")
 
     return top_results
 

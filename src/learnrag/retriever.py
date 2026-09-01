@@ -47,15 +47,16 @@ def build_hybrid_retriever(
     return hybrid_retriever
 
 
-def hybrid_search(retriever: EnsembleRetriever, query: str) -> list[Document]:
+def hybrid_search(retriever: EnsembleRetriever, query: str, verbose: bool = True) -> list[Document]:
     """Run a query through the hybrid retriever and return the RRF-fused candidates."""
     results = retriever.invoke(query)
 
-    print(f"\nRetrieved {len(results)} hybrid candidates for query: '{query}'")
-    for i, doc in enumerate(results, start=1):
-        preview = doc.page_content[:150].replace("\n", " ")
-        source = doc.metadata.get("source", "unknown")
-        print(f"{i}. [{source}] {preview}...")
+    if verbose:
+        print(f"\nRetrieved {len(results)} hybrid candidates for query: '{query}'")
+        for i, doc in enumerate(results, start=1):
+            preview = doc.page_content[:150].replace("\n", " ")
+            source = doc.metadata.get("source", "unknown")
+            print(f"{i}. [{source}] {preview}...")
 
     return results
 

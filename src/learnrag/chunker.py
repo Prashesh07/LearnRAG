@@ -3,10 +3,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
 import tiktoken
 from document_loader import get_documents
-import re  #to remove references from the chunks
-
-
-docs = get_documents("./docs/research_papers") 
+import re  #to remove references from the chunks 
 
 def token_length(text: str) -> int:
     encoding = tiktoken.get_encoding("cl100k_base")
@@ -54,6 +51,7 @@ def split_chunks(documents: list[Document], chunk_size: int = 1200, chunk_overla
 
 if __name__ == "__main__":
     
+    docs = get_documents("./docs/research_papers")
     chunks = split_chunks(docs)
 
     print("\nSample chunk metadata:")
