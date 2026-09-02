@@ -3,39 +3,51 @@ Evaluation harness for the LearnRAG research assistant.
 
 Measures two things:
   1. RETRIEVAL QUALITY — compares dense-only, hybrid, and hybrid+reranked
-     retrieval using Hit Rate@k and Mean Reciprocal Rank (MRR), based on
-     whether retrieved chunks come from the expected source paper(s).
-  2. GENERATION FAITHFULNESS — uses an LLM-as-judge to score whether the
-     final generated answer is actually grounded in the retrieved context
-     (catches hallucination, like we saw with the off-topic LangChain query).
+     retrieval using Hit Rate@k (multiple cutoffs) and Mean Reciprocal Rank.
+     Each variant retrieves from the same candidate pool, so comparisons are fair.
+     Runs by default and makes NO LLM calls.
+  2. GENERATION FAITHFULNESS (OPT-IN) — uses an LLM-as-judge to score whether
+     the final generated answer is actually grounded in the retrieved context
+     (catches hallucination). Skipped unless run with:
+        python evaluation.py --with-judge [--judge-runs N]
 
-
+Run from src/learnrag/:  python evaluation.py
 """
 
+import argparse
+import json
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from statistics import mean
+
 from dotenv import load_dotenv
-load_dotenv()
 from langchain_core.documents import Document
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_groq import ChatGroq
 
-from document_loader import get_documents
-from chunker import split_chunks
-from vectordb import build_vector_store, load_vector_store
-from retriever import build_hybrid_retriever, hybrid_search
-from reranker import rerank
 from eval_dataset import EVAL_QUESTIONS
+from generator import build_rag_chain, get_pipeline, retrieve_context
+from reranker import rerank
+from retriever import hybrid_search
+
+load_dotenv()
+
+
+# Source id helpers
+
+
+def normalize_arxiv_id(raw_id: str) -> str:
+    """Strip an arXiv version suffix (e.g. '2502.10709v2' -> '2502.10709')."""
+    return re.sub(r"v\d+$", "", raw_id)
 
 
 def extract_source_id(doc: Document) -> str:
-    """Pull the arXiv ID (filename stem) out of a chunk's metadata source path."""
+    """Pull the arXiv ID out of a chunk's metadata source path, ignoring version."""
     source_path = doc.metadata.get("source", "")
-    return Path(source_path).stem
-
+    return normalize_arxiv_id(Path(source_path).stem)
 
 
 # Retrieval metrics
@@ -44,43 +56,110 @@ def extract_source_id(doc: Document) -> str:
 def hit_rate_at_k(results: list[Document], expected_sources: list[str], k: int) -> bool:
     """True if any of the top-k results comes from an expected source paper."""
     top_k_sources = {extract_source_id(doc) for doc in results[:k]}
-    return bool(top_k_sources & set(expected_sources))
+    expected = {normalize_arxiv_id(s) for s in expected_sources}
+    return bool(top_k_sources & expected)
 
 
 def reciprocal_rank(results: list[Document], expected_sources: list[str]) -> float:
     """1/rank of the first relevant result found; 0 if none found."""
+    expected = {normalize_arxiv_id(s) for s in expected_sources}
     for rank_i, doc in enumerate(results, start=1):
-        if extract_source_id(doc) in expected_sources:
+        if extract_source_id(doc) in expected:
             return 1.0 / rank_i
     return 0.0
 
 
-def evaluate_retriever(name: str, retrieve_fn, k: int = 5) -> dict:
+def evaluate_retriever(
+    name: str,
+    retrieve_fn,
+    k_values: tuple[int, ...] = (1, 3, 5, 10),
+    dataset: list[dict] | None = None,
+) -> dict:
     """
     Run every eval question through a retrieval function and compute
-    Hit Rate@k and MRR across the whole test set.
+    Hit Rate@k (for each k in k_values) and MRR across the whole test set.
 
     Args:
         name: Label for this pipeline variant (for printing).
         retrieve_fn: A function(question: str) -> list[Document].
-        k: Cutoff for Hit Rate@k.
+        k_values: Cutoffs to report Hit Rate@k for.
+        dataset: Test set (defaults to EVAL_QUESTIONS).
+
+    Returns:
+        {"aggregate": {...metrics...}, "per_question": [...]}.
     """
-    hits = []
-    reciprocal_ranks = []
+    dataset = dataset or EVAL_QUESTIONS
+    num_questions = len(dataset)
 
-    for item in EVAL_QUESTIONS:
+    hit_by_k = {k: [] for k in k_values}
+    mrr_scores = []
+    per_question = []
+
+    for item in dataset:
         results = retrieve_fn(item["question"])
-        hits.append(hit_rate_at_k(results, item["expected_sources"], k))
-        reciprocal_ranks.append(reciprocal_rank(results, item["expected_sources"]))
 
-    hit_rate = mean(hits)
-    mrr = mean(reciprocal_ranks)
+        for k in k_values:
+            hit_by_k[k].append(hit_rate_at_k(results, item["expected_sources"], k))
 
-    print(f"\n{name}")
-    print(f"  Hit Rate@{k}: {hit_rate:.2%}")
-    print(f"  MRR:         {mrr:.3f}")
+        rr = reciprocal_rank(results, item["expected_sources"])
+        mrr_scores.append(rr)
 
-    return {"name": name, "hit_rate": hit_rate, "mrr": mrr}
+        per_question.append(
+            {
+                "question": item["question"],
+                "expected_sources": item["expected_sources"],
+                "hit": {k: hit_by_k[k][-1] for k in k_values},
+                "mrr": rr,
+            }
+        )
+
+    aggregate = {"name": name, "num_questions": num_questions}
+    for k in k_values:
+        aggregate[f"hit_rate@{k}"] = mean(hit_by_k[k]) if hit_by_k[k] else 0.0
+    aggregate["mrr"] = mean(mrr_scores) if mrr_scores else 0.0
+
+    return {"aggregate": aggregate, "per_question": per_question}
+
+
+def print_summary_table(results_list: list[dict], k_values: tuple[int, ...]) -> None:
+    """Print the Hit Rate@k + MRR table for a set of retrieval variant results."""
+    header = f"{'Variant':<30}" + "".join(f"{f'Hit@{k}':>8}" for k in k_values) + f"{'MRR':>8}"
+    print(header)
+    print("-" * len(header))
+
+    for r in results_list:
+        agg = r["aggregate"]
+        row = f"{agg['name']:<30}"
+        for k in k_values:
+            row += f"{agg[f'hit_rate@{k}']:>8.1%}"
+        row += f"{agg['mrr']:>8.3f}"
+        print(row)
+
+
+def print_per_question_table(results_list: list[dict], k: int) -> None:
+    """Print a per-question hit/miss breakdown for each variant at cutoff k."""
+    rows = results_list[0]["per_question"]
+    header = f"{'#':<4}{'Question':<52}{'Dense':>7}{'Hybrid':>8}{'Hybrid+CE':>10}{'Expected':>14}"
+    print(header)
+    print("-" * len(header))
+
+    for variant in results_list:
+        assert len(variant["per_question"]) == len(rows), (
+            "variants must share the same per-question length"
+        )
+
+    for i, row in enumerate(rows, start=1):
+        question = row["question"]
+        q_trunc = question[:49] + ("..." if len(question) > 49 else "")
+        expected = row["expected_sources"][0]
+        mark = lambda ok: "Y" if ok else "N"
+        print(
+            f"{i:<4}{q_trunc:<52}"
+            f"{mark(results_list[0]['per_question'][i - 1]['hit'][k]):>7}"
+            f"{mark(results_list[1]['per_question'][i - 1]['hit'][k]):>8}"
+            f"{mark(results_list[2]['per_question'][i - 1]['hit'][k]):>10}"
+            f"{expected:>14}"
+        )
 
 
 # Generation faithfulness (LLM-as-judge)
@@ -117,79 +196,171 @@ def judge_faithfulness(judge_model, question: str, context: str, answer: str) ->
     return int(match.group()) if match else 0
 
 
-def evaluate_generation_faithfulness(rag_chain, retrieve_context_fn, judge_model) -> float:
-    """Run each eval question through the full RAG chain and score faithfulness."""
-    scores = []
+def judge_faithfulness_averaged(
+    judge_model, question: str, context: str, answer: str, n_runs: int = 1
+) -> float:
+    """Average several judge runs to reduce LLM stochasticity."""
+    if n_runs <= 1:
+        return float(judge_faithfulness(judge_model, question, context, answer))
+    return mean(
+        judge_faithfulness(judge_model, question, context, answer)
+        for _ in range(n_runs)
+    )
 
-    for item in EVAL_QUESTIONS:
+
+def evaluate_generation_faithfulness(
+    judge_model, n_runs: int = 1, dataset: list[dict] | None = None
+) -> dict:
+    """
+    Run each eval question through the full RAG pipeline and score faithfulness.
+
+    Retrieval runs ONCE per question: the same retrieved context is used both to
+    generate the answer and as the grounding the judge compares against.
+    """
+    dataset = dataset or EVAL_QUESTIONS
+    per_question = []
+
+    for item in dataset:
         question = item["question"]
-        context = retrieve_context_fn(question)
-        answer = rag_chain.invoke(question)
-        score = judge_faithfulness(judge_model, question, context, answer)
-        scores.append(score)
-        print(f"  [{score}/5] {question[:70]}...")
+        context = retrieve_context(question, verbose=False)
+        answer = build_rag_chain().invoke({"context": context, "question": question})
+        score = judge_faithfulness_averaged(judge_model, question, context, answer, n_runs=n_runs)
+        per_question.append({"question": question, "score": score})
+        print(f"  [{score:.2f}/5] {question[:70]}")
 
-    avg_score = mean(scores)
-    print(f"\nAverage faithfulness score: {avg_score:.2f}/5")
-    return avg_score
+    scores = [pq["score"] for pq in per_question]
+    avg_score = mean(scores) if scores else 0.0
+    print(f"\nAverage faithfulness score: {avg_score:.2f}/5 "
+          f"({n_runs} judge runs per question)")
+    return {"aggregate": {"avg_score": avg_score}, "per_question": per_question}
 
+
+def save_results(
+    results_dense,
+    results_hybrid,
+    results_reranked,
+    faithfulness,
+    config,
+    out_dir: str = "./eval_results",
+) -> Path:
+    """Persist the run's results to eval_results/eval_<timestamp>.json."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    payload = {
+        "timestamp": timestamp,
+        "config": config,
+        "retrieval": {
+            "dense": results_dense,
+            "hybrid": results_hybrid,
+            "hybrid_reranked": results_reranked,
+        },
+    }
+    if faithfulness is not None:
+        payload["faithfulness"] = faithfulness
+
+    out_path = out_dir / f"eval_{timestamp}.json"
+    out_path.write_text(json.dumps(payload, indent=2))
+    return out_path
 
 
 # Main
 
 
 if __name__ == "__main__":
-    docs = get_documents("./docs/research_papers")
-    chunks = split_chunks(docs)
+    parser = argparse.ArgumentParser(description="LearnRAG evaluation harness")
+    parser.add_argument(
+        "--with-judge",
+        action="store_true",
+        help="also run the LLM-as-judge faithfulness pass (slow, uses Groq tokens)",
+    )
+    parser.add_argument(
+        "--judge-runs",
+        type=int,
+        default=1,
+        help="judge passes per question when --with-judge is set (default: 1)",
+    )
+    args = parser.parse_args()
 
-    vector_store = load_vector_store() if Path("./chroma_db").exists() else build_vector_store(chunks)
-    hybrid_retriever = build_hybrid_retriever(chunks, vector_store, dense_k=10, sparse_k=10)
+    K_VALUES = (1, 3, 5, 10)
+    RETRIEVAL_DEPTH = 20  # every variant retrieves from the same deep candidate pool
+    RERANK_TOP_K = 3      # matches production (generator.RERANK_TOP_K)
 
-    K = 5
+    _, vector_store, hybrid_retriever = get_pipeline()
 
-    print("=" * 60)
+    print("=" * 64)
     print("RETRIEVAL EVALUATION")
-    print("=" * 60)
+    print("=" * 64)
 
-    # Variant 1: dense-only
-    dense_retriever = vector_store.as_retriever(search_kwargs={"k": K})
+    dense_retriever = vector_store.as_retriever(search_kwargs={"k": RETRIEVAL_DEPTH})
+
     results_dense = evaluate_retriever(
         "Dense-only",
         lambda q: dense_retriever.invoke(q),
-        k=K,
+        k_values=K_VALUES,
     )
 
-    # Variant 2: hybrid (dense + sparse via RRF)
     results_hybrid = evaluate_retriever(
         "Hybrid (dense + BM25, RRF)",
-        lambda q: hybrid_search(hybrid_retriever, q),
-        k=K,
+        lambda q: hybrid_search(hybrid_retriever, q, verbose=False),
+        k_values=K_VALUES,
     )
 
-    # Variant 3: hybrid + reranked
     results_reranked = evaluate_retriever(
-        "Hybrid + Reranked",
-        lambda q: rerank(q, hybrid_search(hybrid_retriever, q), top_k=K),
-        k=K,
+        "Hybrid + Cross-Encoder",
+        lambda q: rerank(
+            q,
+            hybrid_search(hybrid_retriever, q, verbose=False),
+            top_k=RERANK_TOP_K,
+            verbose=False,
+        ),
+        k_values=K_VALUES,
     )
 
-    print("\n" + "=" * 60)
-    print("SUMMARY")
-    print("=" * 60)
-    for r in [results_dense, results_hybrid, results_reranked]:
-        print(f"{r['name']:<30} Hit Rate@{K}: {r['hit_rate']:.2%}   MRR: {r['mrr']:.3f}")
+    print("\n" + "=" * 64)
+    print("SUMMARY - Hit Rate@k / MRR")
+    print("=" * 64)
+    print_summary_table([results_dense, results_hybrid, results_reranked], K_VALUES)
+    print(f"\nNote: 'Hybrid + Cross-Encoder' returns only top-{RERANK_TOP_K} chunks "
+          f"(production setting), so its Hit Rate plateaus after k={RERANK_TOP_K}.")
 
-    # Generation faithfulness 
-    print("\n" + "=" * 60)
-    print("GENERATION FAITHFULNESS (LLM-as-judge)")
-    print("=" * 60)
+    print("\n" + "=" * 64)
+    print("PER-QUESTION BREAKDOWN (Hit@5)")
+    print("=" * 64)
+    print_per_question_table([results_dense, results_hybrid, results_reranked], k=5)
 
-    judge_model = ChatGroq(
-        temperature=0,
-        model_name="openai/gpt-oss-120b",
-        api_key=os.environ["GROQ_API_KEY"],
+    # Generation faithfulness (LLM-as-judge) — opt-in
+    faithfulness = None
+    if args.with_judge:
+        print("\n" + "=" * 64)
+        print("GENERATION FAITHFULNESS (LLM-as-judge)")
+        print("=" * 64)
+
+        judge_model = ChatGroq(
+            temperature=0,
+            model_name="openai/gpt-oss-120b",
+            api_key=os.environ["GROQ_API_KEY"],
+        )
+
+        faithfulness = evaluate_generation_faithfulness(
+            judge_model, n_runs=args.judge_runs
+        )
+    else:
+        print("\n" + "=" * 64)
+        print("Skipping GENERATION FAITHFULNESS (LLM-as-judge).")
+        print("Re-run with --with-judge to include it.")
+        print("=" * 64)
+
+    config = {
+        "k_values": list(K_VALUES),
+        "retrieval_depth": RETRIEVAL_DEPTH,
+        "rerank_top_k": RERANK_TOP_K,
+        "num_questions": len(EVAL_QUESTIONS),
+        "with_judge": args.with_judge,
+        "judge_runs": args.judge_runs,
+    }
+    out_path = save_results(
+        results_dense, results_hybrid, results_reranked, faithfulness, config
     )
-
-    from generator import rag_chain, retrieve_context  # reuse your existing chain
-
-    evaluate_generation_faithfulness(rag_chain, retrieve_context, judge_model)
+    print(f"\nSaved results to {out_path}")
