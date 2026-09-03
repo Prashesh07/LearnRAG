@@ -23,4 +23,10 @@ chroma_data/
 #cache
 cache/
 
+# Exclude eval harness outputs (generated per run)
+eval_results/
+
+# Personal concept notes (gitignored by choice)
+LEARNING_GUIDE.md
+
 
